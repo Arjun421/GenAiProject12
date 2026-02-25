@@ -4,8 +4,9 @@ import numpy as np
 from sklearn.model_selection import train_test_split
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.linear_model import LogisticRegression
-from sklearn.tree import DecisionTreeClassifier
+from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import accuracy_score, precision_score, recall_score, classification_report
+from sklearn.preprocessing import StandardScaler
 import re
 
 # Page config
@@ -40,30 +41,89 @@ def preprocess_text(text):
     text = re.sub(r'[^a-zA-Z0-9\s]', '', text)
     return text
 
+# Extract additional features
+def extract_features(df):
+    features = pd.DataFrame()
+    
+    # Text length features
+    features['question_length'] = df['questions'].str.len()
+    features['answer_length'] = df['model_answer'].str.len()
+    features['student_answer_length'] = df['student_answer'].str.len()
+    
+    # Word count features
+    features['question_words'] = df['questions'].str.split().str.len()
+    features['answer_words'] = df['model_answer'].str.split().str.len()
+    features['student_words'] = df['student_answer'].str.split().str.len()
+    
+    # Complexity indicators
+    features['has_explain'] = df['questions'].str.lower().str.contains('explain|describe').astype(int)
+    features['has_what'] = df['questions'].str.lower().str.contains('what is|what are').astype(int)
+    features['has_define'] = df['questions'].str.lower().str.contains('define|name|list').astype(int)
+    features['has_compare'] = df['questions'].str.lower().str.contains('compare|difference|contrast').astype(int)
+    
+    # Answer similarity (simple ratio)
+    features['answer_match_ratio'] = df.apply(
+        lambda x: len(set(str(x['student_answer']).lower().split()) & 
+                     set(str(x['model_answer']).lower().split())) / 
+                 max(len(str(x['model_answer']).split()), 1), axis=1
+    )
+    
+    return features
+
 # Train models
 @st.cache_resource
 def train_models(df):
-    # Prepare features
+    # Prepare text features
     df['combined_text'] = df['questions'] + ' ' + df['model_answer']
     df['processed_text'] = df['combined_text'].apply(preprocess_text)
     
-    # TF-IDF vectorization
-    vectorizer = TfidfVectorizer(max_features=100, stop_words='english')
-    X = vectorizer.fit_transform(df['processed_text'])
+    # TF-IDF vectorization with better parameters
+    vectorizer = TfidfVectorizer(
+        max_features=150, 
+        stop_words='english',
+        ngram_range=(1, 2),  # Include bigrams
+        min_df=2
+    )
+    X_text = vectorizer.fit_transform(df['processed_text'])
+    
+    # Extract additional features
+    X_extra = extract_features(df)
+    
+    # Scale numerical features
+    scaler = StandardScaler()
+    X_extra_scaled = scaler.fit_transform(X_extra)
+    
+    # Combine TF-IDF and additional features
+    from scipy.sparse import hstack
+    X_combined = hstack([X_text, X_extra_scaled])
+    
     y = df['difficulty_category']
     
-    # Split data
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+    # Split data with stratification
+    X_train, X_test, y_train, y_test = train_test_split(
+        X_combined, y, test_size=0.2, random_state=42, stratify=y
+    )
     
-    # Train Logistic Regression
-    lr_model = LogisticRegression(max_iter=200, random_state=42)
+    # Train Logistic Regression with better parameters
+    lr_model = LogisticRegression(
+        max_iter=500, 
+        random_state=42,
+        C=1.0,
+        class_weight='balanced'
+    )
     lr_model.fit(X_train, y_train)
     lr_pred = lr_model.predict(X_test)
     
-    # Train Decision Tree
-    dt_model = DecisionTreeClassifier(max_depth=5, random_state=42)
-    dt_model.fit(X_train, y_train)
-    dt_pred = dt_model.predict(X_test)
+    # Train Random Forest (better than Decision Tree)
+    rf_model = RandomForestClassifier(
+        n_estimators=100,
+        max_depth=10,
+        random_state=42,
+        class_weight='balanced',
+        min_samples_split=5
+    )
+    rf_model.fit(X_train, y_train)
+    rf_pred = rf_model.predict(X_test)
     
     # Calculate metrics
     lr_metrics = {
@@ -73,18 +133,18 @@ def train_models(df):
         'report': classification_report(y_test, lr_pred)
     }
     
-    dt_metrics = {
-        'accuracy': accuracy_score(y_test, dt_pred),
-        'precision': precision_score(y_test, dt_pred, average='weighted', zero_division=0),
-        'recall': recall_score(y_test, dt_pred, average='weighted', zero_division=0),
-        'report': classification_report(y_test, dt_pred)
+    rf_metrics = {
+        'accuracy': accuracy_score(y_test, rf_pred),
+        'precision': precision_score(y_test, rf_pred, average='weighted', zero_division=0),
+        'recall': recall_score(y_test, rf_pred, average='weighted', zero_division=0),
+        'report': classification_report(y_test, rf_pred)
     }
     
-    return vectorizer, lr_model, dt_model, lr_metrics, dt_metrics, df
+    return vectorizer, scaler, lr_model, rf_model, lr_metrics, rf_metrics, df
 
 # Load data and train
 df = load_data()
-vectorizer, lr_model, dt_model, lr_metrics, dt_metrics, processed_df = train_models(df)
+vectorizer, scaler, lr_model, rf_model, lr_metrics, rf_metrics, processed_df = train_models(df)
 
 # Sidebar
 st.sidebar.header("Navigation")
@@ -110,21 +170,36 @@ elif page == "🔮 Predict Difficulty":
     
     question_input = st.text_area("Enter Question Text:", height=100)
     answer_input = st.text_area("Enter Model Answer:", height=100)
+    student_input = st.text_area("Enter Student Answer (optional):", height=100, value="Sample student response")
     
-    model_choice = st.selectbox("Select Model", ["Logistic Regression", "Decision Tree"])
+    model_choice = st.selectbox("Select Model", ["Random Forest (Best)", "Logistic Regression"])
     
     if st.button("Predict Difficulty"):
         if question_input and answer_input:
+            # Prepare text features
             combined = question_input + ' ' + answer_input
             processed = preprocess_text(combined)
-            features = vectorizer.transform([processed])
+            text_features = vectorizer.transform([processed])
             
-            if model_choice == "Logistic Regression":
-                prediction = lr_model.predict(features)[0]
-                proba = lr_model.predict_proba(features)[0]
+            # Prepare additional features
+            temp_df = pd.DataFrame({
+                'questions': [question_input],
+                'model_answer': [answer_input],
+                'student_answer': [student_input if student_input else answer_input]
+            })
+            extra_features = extract_features(temp_df)
+            extra_features_scaled = scaler.transform(extra_features)
+            
+            # Combine features
+            from scipy.sparse import hstack
+            combined_features = hstack([text_features, extra_features_scaled])
+            
+            if model_choice == "Random Forest (Best)":
+                prediction = rf_model.predict(combined_features)[0]
+                proba = rf_model.predict_proba(combined_features)[0]
             else:
-                prediction = dt_model.predict(features)[0]
-                proba = dt_model.predict_proba(features)[0]
+                prediction = lr_model.predict(combined_features)[0]
+                proba = lr_model.predict_proba(combined_features)[0]
             
             st.success(f"Predicted Difficulty: **{prediction}**")
             
@@ -144,19 +219,21 @@ elif page == "📈 Model Performance":
     
     with col1:
         st.subheader("Logistic Regression")
-        st.metric("Accuracy", f"{lr_metrics['accuracy']:.3f}")
-        st.metric("Precision", f"{lr_metrics['precision']:.3f}")
-        st.metric("Recall", f"{lr_metrics['recall']:.3f}")
+        st.metric("Accuracy", f"{lr_metrics['accuracy']:.1%}")
+        st.metric("Precision", f"{lr_metrics['precision']:.1%}")
+        st.metric("Recall", f"{lr_metrics['recall']:.1%}")
         st.text("Classification Report:")
         st.text(lr_metrics['report'])
     
     with col2:
-        st.subheader("Decision Tree")
-        st.metric("Accuracy", f"{dt_metrics['accuracy']:.3f}")
-        st.metric("Precision", f"{dt_metrics['precision']:.3f}")
-        st.metric("Recall", f"{dt_metrics['recall']:.3f}")
+        st.subheader("Random Forest ⭐")
+        st.metric("Accuracy", f"{rf_metrics['accuracy']:.1%}")
+        st.metric("Precision", f"{rf_metrics['precision']:.1%}")
+        st.metric("Recall", f"{rf_metrics['recall']:.1%}")
         st.text("Classification Report:")
-        st.text(dt_metrics['report'])
+        st.text(rf_metrics['report'])
+    
+    st.info("💡 Random Forest uses 100 decision trees and additional features (question length, keywords, answer similarity) for better accuracy.")
 
 st.sidebar.markdown("---")
 st.sidebar.info("Built with Streamlit, Scikit-Learn & TF-IDF")
