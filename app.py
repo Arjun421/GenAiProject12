@@ -13,7 +13,8 @@ import re
 st.set_page_config(page_title="Exam Question Analytics", layout="wide")
 
 # Titlegive 
-
+st.title("🎓 ML-Based Exam Question Analytics System")
+st.markdown("### Milestone 1: Classical ML & NLP for Question Difficulty Prediction")
 
 # Load and preprocess data
 
@@ -24,9 +25,9 @@ def load_data():
     # More granular difficulty scoring
     df['difficulty_score'] = df['teacher_marks'] / df['total_marks']
     
-    # Improved categorization with better thresholds
+    
     def categorize_difficulty(score):
-        if score >= 0.85:  # Stricter threshold for Easy
+        if score >= 0.85:  
             return 'Easy'
         elif score >= 0.45:  # Adjusted Medium range
             return 'Medium'
