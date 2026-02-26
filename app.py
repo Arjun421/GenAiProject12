@@ -13,11 +13,10 @@ import re
 st.set_page_config(page_title="Exam Question Analytics", layout="wide")
 
 # Titlegive 
-st.title("🎓 ML-Based Exam Question Analytics System")
-st.markdown("### Milestone 1: Classical ML & NLP for Question Difficulty Prediction")
+
 
 # Load and preprocess data
-@st.cache_data
+
 def load_data():
     df = pd.read_csv('Dataset.csv')
     df = df.dropna(subset=['questions', 'model_answer', 'student_answer', 'teacher_marks', 'total_marks'])
